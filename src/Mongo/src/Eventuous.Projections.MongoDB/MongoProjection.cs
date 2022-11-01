@@ -1,12 +1,17 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Runtime.CompilerServices;
 using Eventuous.Projections.MongoDB.Tools;
 using Eventuous.Subscriptions.Context;
+using Eventuous.Subscriptions.Logging;
 using static Eventuous.Subscriptions.Diagnostics.SubscriptionsEventSource;
 
 namespace Eventuous.Projections.MongoDB;
 
-[PublicAPI]
+[UsedImplicitly]
 public abstract class MongoProjection<T> : BaseEventHandler where T : ProjectedDocument {
+    [PublicAPI]
     protected IMongoCollection<T> Collection { get; }
 
     readonly Dictionary<Type, ProjectUntypedEvent> _handlersMap = new();
@@ -17,8 +22,6 @@ public abstract class MongoProjection<T> : BaseEventHandler where T : ProjectedD
         _map       = typeMap ?? TypeMap.Instance;
     }
 
-    readonly UpdateOptions _defaultUpdateOptions = new() { IsUpsert = true };
-
     /// <summary>
     /// Register a handler for a particular event type
     /// </summary>
@@ -26,63 +29,74 @@ public abstract class MongoProjection<T> : BaseEventHandler where T : ProjectedD
     /// <typeparam name="T">Event type</typeparam>
     /// <typeparam name="TEvent"></typeparam>
     /// <exception cref="ArgumentException">Throws if a handler for the given event type has already been registered</exception>
+    [PublicAPI]
     protected void On<TEvent>(ProjectTypedEvent<T, TEvent> handler) where TEvent : class {
         if (!_handlersMap.TryAdd(typeof(TEvent), x => HandleInternal(x, handler))) {
             throw new ArgumentException($"Type {typeof(TEvent).Name} already has a handler");
         }
 
         if (!_map.IsTypeRegistered<TEvent>()) {
-            Log.UnknownMessageType<TEvent>();
+            Logger.Current.MessageTypeNotFound<TEvent>();
         }
     }
 
-    protected void On<TEvent>(GetDocumentId<TEvent> getId, BuildUpdate<TEvent, T> getUpdate) where TEvent : class
-        => On<TEvent>(ctx => UpdateOperationTask(getId(ctx.Message), update => getUpdate(ctx.Message, update)));
+    /// <summary>
+    /// Define a projector operation using the <see cref="MongoOperationBuilder{TEvent,T}"/>
+    /// </summary>
+    /// <param name="configure">Builder configuration delegate</param>
+    /// <typeparam name="TEvent">Event type</typeparam>
+    [PublicAPI]
+    protected void On<TEvent>(
+        Func<MongoOperationBuilder<TEvent, T>, MongoOperationBuilder<TEvent, T>.IMongoProjectorBuilder> configure
+    )
+        where TEvent : class {
+        var builder   = new MongoOperationBuilder<TEvent, T>();
+        var operation = configure(builder).Build();
+        On(operation);
+    }
 
+    [PublicAPI]
+    protected void On<TEvent>(GetDocumentIdFromEvent<TEvent> getId, BuildUpdate<TEvent, T> getUpdate)
+        where TEvent : class
+        => On<TEvent>(b => b.UpdateOne.Id(x => getId(x.Message)).UpdateFromContext(getUpdate));
+
+    protected void On<TEvent>(GetDocumentIdFromStream getId, BuildUpdate<TEvent, T> getUpdate) where TEvent : class
+        => On<TEvent>(b => b.UpdateOne.Id(x => getId(x.Stream)).UpdateFromContext(getUpdate));
+
+    [PublicAPI]
     protected void On<TEvent>(BuildFilter<TEvent, T> getFilter, BuildUpdate<TEvent, T> getUpdate) where TEvent : class
-        => On<TEvent>(
-            ctx => UpdateOperationTask(
-                filter => getFilter(ctx.Message, filter),
-                update => getUpdate(ctx.Message, update)
-            )
-        );
+        => On<TEvent>(b => b.UpdateOne.Filter(getFilter).UpdateFromContext(getUpdate));
 
-    protected void OnAsync<TEvent>(GetDocumentId<TEvent> getId, BuildUpdateAsync<TEvent, T> getUpdate)
-        where TEvent : class {
-        On<TEvent>(Project);
+    [PublicAPI]
+    protected void OnAsync<TEvent>(GetDocumentIdFromEvent<TEvent> getId, BuildUpdateAsync<TEvent, T> getUpdate)
+        where TEvent : class
+        => On<TEvent>(b => b.UpdateOne.Id(x => getId(x.Message!)).UpdateFromContext(getUpdate));
 
-        async ValueTask<Operation<T>> Project(MessageConsumeContext<TEvent> ctx) {
-            var id     = getId(ctx.Message);
-            var update = await getUpdate(ctx.Message, Builders<T>.Update);
-            return new UpdateOperation<T>(Builders<T>.Filter.Eq(x => x.Id, id), update);
-        }
-    }
+    [PublicAPI]
+    protected void OnAsync<TEvent>(GetDocumentIdFromStream getId, BuildUpdateAsync<TEvent, T> getUpdate)
+        where TEvent : class
+        => On<TEvent>(b => b.UpdateOne.Id(x => getId(x.Stream)).UpdateFromContext(getUpdate));
 
+    [PublicAPI]
     protected void OnAsync<TEvent>(BuildFilter<TEvent, T> getFilter, BuildUpdateAsync<TEvent, T> getUpdate)
-        where TEvent : class {
-        On<TEvent>(Project);
-
-        async ValueTask<Operation<T>> Project(MessageConsumeContext<TEvent> ctx) {
-            var filter = getFilter(ctx.Message, Builders<T>.Filter);
-            var update = await getUpdate(ctx.Message, Builders<T>.Update);
-            return new UpdateOperation<T>(filter, update);
-        }
-    }
-
-    readonly ValueTask<EventHandlingStatus> _ignored = new(EventHandlingStatus.Ignored);
+        where TEvent : class
+        => On<TEvent>(b => b.UpdateOne.Filter(getFilter).UpdateFromContext(getUpdate));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    ValueTask<Operation<T>> HandleInternal<TEvent>(IMessageConsumeContext context, ProjectTypedEvent<T, TEvent> handler)
+    ValueTask<MongoProjectOperation<T>> HandleInternal<TEvent>(
+        IMessageConsumeContext       context,
+        ProjectTypedEvent<T, TEvent> handler
+    )
         where TEvent : class {
         return context.Message is not TEvent ? NoHandler() : HandleTypedEvent();
 
-        ValueTask<Operation<T>> HandleTypedEvent() {
+        ValueTask<MongoProjectOperation<T>> HandleTypedEvent() {
             var typedContext = new MessageConsumeContext<TEvent>(context);
             return handler(typedContext);
         }
 
-        ValueTask<Operation<T>> NoHandler() {
-            Log.NoHandlerFound(DiagnosticName, context.MessageType);
+        ValueTask<MongoProjectOperation<T>> NoHandler() {
+            Logger.Current.MessageHandlerNotFound(DiagnosticName, context.MessageType);
             return NoOp;
         }
     }
@@ -101,69 +115,28 @@ public abstract class MongoProjection<T> : BaseEventHandler where T : ProjectedD
             return EventHandlingStatus.Ignored;
         }
 
-        var status = EventHandlingStatus.Success;
-
-        var task = update switch {
-            OtherOperation<T> operation => operation.Execute(),
-            CollectionOperation<T> col  => col.Execute(Collection, context.CancellationToken),
-            UpdateOperation<T> upd      => ExecuteUpdate(upd),
-            _                           => Ignore()
-        };
+        var task = update.Execute(Collection, context.CancellationToken);
 
         if (!task.IsCompleted) await task.NoContext();
-        return status;
-
-        Task Ignore() {
-            status = EventHandlingStatus.Ignored;
-            return Task.CompletedTask;
-        }
-
-        Task ExecuteUpdate(UpdateOperation<T> upd) {
-            var streamPosition = context.Items.TryGetItem<ulong>(ContextKeys.StreamPosition);
-
-            var (filterDefinition, updateDefinition) = upd;
-
-            return Collection.UpdateOneAsync(
-                filterDefinition,
-                updateDefinition.Set(x => x.Position, streamPosition),
-                _defaultUpdateOptions,
-                context.CancellationToken
-            );
-        }
+        return EventHandlingStatus.Success;
     }
 
-    protected virtual ValueTask<Operation<T>> GetUpdate(object evt, ulong? position) => NoOp;
+    [PublicAPI]
+    protected virtual ValueTask<MongoProjectOperation<T>> GetUpdate(object evt, ulong? position) => NoOp;
 
-    ValueTask<Operation<T>> GetUpdate(IMessageConsumeContext context) {
-        var streamPosition = context.Items.TryGetItem<ulong>(ContextKeys.StreamPosition);
-        return GetUpdate(context.Message!, streamPosition);
-    }
+    ValueTask<MongoProjectOperation<T>> GetUpdate(IMessageConsumeContext context)
+        => GetUpdate(context.Message!, context.StreamPosition);
 
-    protected Operation<T> UpdateOperation(BuildFilter<T> filter, BuildUpdate<T> update)
-        => new UpdateOperation<T>(filter(Builders<T>.Filter), update(Builders<T>.Update));
+    [PublicAPI] protected static readonly ValueTask<MongoProjectOperation<T>> NoOp = new(
+        (MongoProjectOperation<T>)null!
+    );
 
-    protected ValueTask<Operation<T>> UpdateOperationTask(BuildFilter<T> filter, BuildUpdate<T> update)
-        => new(UpdateOperation(filter, update));
-
-    protected Operation<T> UpdateOperation(string id, BuildUpdate<T> update)
-        => UpdateOperation(filter => filter.Eq(x => x.Id, id), update);
-
-    protected ValueTask<Operation<T>> UpdateOperationTask(string id, BuildUpdate<T> update)
-        => new(UpdateOperation(id, update));
-
-    protected static readonly ValueTask<Operation<T>> NoOp = new((Operation<T>)null!);
-
-    delegate ValueTask<Operation<T>> ProjectUntypedEvent(IMessageConsumeContext evt);
+    delegate ValueTask<MongoProjectOperation<T>> ProjectUntypedEvent(IMessageConsumeContext evt);
 }
 
-public delegate ValueTask<Operation<T>> ProjectTypedEvent<T, TEvent>(MessageConsumeContext<TEvent> consumeContext)
-    where T : class where TEvent : class;
+public delegate ValueTask<MongoProjectOperation<T>> ProjectTypedEvent<T, TEvent>(
+    MessageConsumeContext<TEvent> consumeContext
+)
+    where T : ProjectedDocument where TEvent : class;
 
-// ReSharper disable once UnusedTypeParameter
-public abstract record Operation<T>;
-
-public record UpdateOperation<T>(FilterDefinition<T> Filter, UpdateDefinition<T> Update) : Operation<T>;
-
-public record OtherOperation<T>(Func<Task> Execute) : Operation<T>;
-
-public record CollectionOperation<T>(Func<IMongoCollection<T>, CancellationToken, Task> Execute) : Operation<T>;
+public record MongoProjectOperation<T>(Func<IMongoCollection<T>, CancellationToken, Task> Execute);

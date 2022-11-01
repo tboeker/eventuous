@@ -1,8 +1,11 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Collections.Concurrent;
 using Eventuous.Subscriptions.Context;
-using Eventuous.Subscriptions.Diagnostics;
 using Eventuous.Subscriptions.Filters;
-using static Eventuous.Subscriptions.Diagnostics.SubscriptionsEventSource;
+using Eventuous.Subscriptions.Logging;
+
 // ReSharper disable SuggestBaseTypeForParameter
 
 namespace Eventuous.EventStore.Subscriptions;
@@ -14,7 +17,7 @@ public delegate Task HandleEventProcessingFailure(
     Exception              exception
 );
 
-public abstract class PersistentSubscriptionBase<T> : EventStoreSubscriptionBase<T>
+public abstract class PersistentSubscriptionBase<T> : EventSubscription<T>
     where T : PersistentSubscriptionOptions {
     protected EventStorePersistentSubscriptionsClient SubscriptionClient { get; }
 
@@ -22,8 +25,13 @@ public abstract class PersistentSubscriptionBase<T> : EventStoreSubscriptionBase
 
     PersistentSubscription? _subscription;
 
-    protected PersistentSubscriptionBase(EventStoreClient eventStoreClient, T options, ConsumePipe consumePipe)
-        : base(eventStoreClient, options, consumePipe) {
+    protected PersistentSubscriptionBase(
+        EventStoreClient eventStoreClient,
+        T                options,
+        ConsumePipe      consumePipe,
+        ILoggerFactory?  loggerFactory
+    ) : base(options, consumePipe, loggerFactory) {
+        EventStoreClient = eventStoreClient;
         var settings   = eventStoreClient.GetSettings().Copy();
         var opSettings = settings.OperationOptions.Clone();
         settings.OperationOptions = opSettings;
@@ -32,9 +40,10 @@ public abstract class PersistentSubscriptionBase<T> : EventStoreSubscriptionBase
 
         _handleEventProcessingFailure = options.FailureHandler ?? DefaultEventProcessingFailureHandler;
 
-        if (options.FailureHandler != null && !options.ThrowOnError)
-            Log.ThrowOnErrorIncompatible(SubscriptionId);
+        if (options.FailureHandler != null && !options.ThrowOnError) Log.ThrowOnErrorIncompatible();
     }
+
+    protected EventStoreClient EventStoreClient { get; }
 
     const string ResolvedEventKey = "resolvedEvent";
     const string SubscriptionKey  = "subscription";
@@ -48,11 +57,22 @@ public abstract class PersistentSubscriptionBase<T> : EventStoreSubscriptionBase
         var settings = Options.SubscriptionSettings ?? new PersistentSubscriptionSettings(Options.ResolveLinkTos);
 
         try {
-            _subscription = await LocalSubscribe(HandleEvent, HandleDrop, cancellationToken).NoContext();
+            _subscription = await LocalSubscribe(
+                    (subscription, @event, retryCount, ct) => HandleEvent(subscription, @event, retryCount, ct),
+                    HandleDrop,
+                    cancellationToken
+                )
+                .NoContext();
         }
         catch (PersistentSubscriptionNotFoundException) {
             await CreatePersistentSubscription(settings, cancellationToken);
-            _subscription = await LocalSubscribe(HandleEvent, HandleDrop, cancellationToken).NoContext();
+
+            _subscription = await LocalSubscribe(
+                    (subscription, @event, retryCount, ct) => HandleEvent(subscription, @event, retryCount, ct),
+                    HandleDrop,
+                    cancellationToken
+                )
+                .NoContext();
         }
 
         void HandleDrop(
@@ -68,6 +88,8 @@ public abstract class PersistentSubscriptionBase<T> : EventStoreSubscriptionBase
             int?                   retryCount,
             CancellationToken      ct
         ) {
+            Logger.Configure(Options.SubscriptionId, LoggerFactory);
+
             var context = CreateContext(re, ct)
                 .WithItem(ResolvedEventKey, re)
                 .WithItem(SubscriptionKey, subscription);
@@ -83,6 +105,8 @@ public abstract class PersistentSubscriptionBase<T> : EventStoreSubscriptionBase
         }
     }
 
+    protected EventPosition? LastProcessed { get; set; }
+
     protected abstract Task<PersistentSubscription> LocalSubscribe(
         Func<PersistentSubscription, ResolvedEvent, int?, CancellationToken, Task> eventAppeared,
         Action<PersistentSubscription, SubscriptionDroppedReason, Exception?>?     subscriptionDropped,
@@ -92,30 +116,29 @@ public abstract class PersistentSubscriptionBase<T> : EventStoreSubscriptionBase
     ConcurrentQueue<ResolvedEvent> AckQueue { get; } = new();
 
     async ValueTask Ack(IMessageConsumeContext ctx) {
-        var re = ctx.Items.TryGetItem<ResolvedEvent>(ResolvedEventKey);
+        var re = ctx.Items.GetItem<ResolvedEvent>(ResolvedEventKey);
         AckQueue.Enqueue(re);
 
         if (AckQueue.Count < Options.BufferSize) return;
 
-        var subscription = ctx.Items.TryGetItem<PersistentSubscription>(SubscriptionKey)!;
+        var subscription = ctx.Items.GetItem<PersistentSubscription>(SubscriptionKey)!;
 
         var toAck = new List<ResolvedEvent>();
 
         for (var i = 0; i < Options.BufferSize; i++) {
-            if (AckQueue.TryDequeue(out var evt))
-                toAck.Add(evt);
+            if (AckQueue.TryDequeue(out var evt)) toAck.Add(evt);
         }
 
         await subscription.Ack(toAck).NoContext();
     }
 
     async ValueTask Nack(IMessageConsumeContext ctx, Exception exception) {
-        Log.MessageHandlingFailed(Options.SubscriptionId, ctx, exception);
-        
+        ctx.LogContext.MessageHandlingFailed(Options.SubscriptionId, ctx, exception);
+
         if (Options.ThrowOnError) throw exception;
 
-        var re           = ctx.Items.TryGetItem<ResolvedEvent>(ResolvedEventKey);
-        var subscription = ctx.Items.TryGetItem<PersistentSubscription>(SubscriptionKey)!;
+        var re           = ctx.Items.GetItem<ResolvedEvent>(ResolvedEventKey);
+        var subscription = ctx.Items.GetItem<PersistentSubscription>(SubscriptionKey)!;
         await _handleEventProcessingFailure(EventStoreClient, subscription, re, exception).NoContext();
     }
 
@@ -129,22 +152,27 @@ public abstract class PersistentSubscriptionBase<T> : EventStoreSubscriptionBase
         );
 
         return new MessageConsumeContext(
-                re.Event.EventId.ToString(),
-                re.Event.EventType,
-                re.Event.ContentType,
+            re.Event.EventId.ToString(),
+            re.Event.EventType,
+            re.Event.ContentType,
+            re.OriginalStreamId,
+            GetContextStreamPosition(re),
+            re.Event.Position.CommitPosition,
+            re.OriginalEventNumber,
+            re.Event.Created,
+            evt,
+            Options.MetadataSerializer.DeserializeMeta(
+                Options,
+                re.Event.Metadata,
                 re.OriginalStreamId,
-                re.Event.EventNumber.ToInt64(),
-                re.Event.Position.CommitPosition,
-                re.OriginalEventNumber,
-                re.Event.Created,
-                evt,
-                DeserializeMeta(re.Event.Metadata, re.OriginalStreamId, re.Event.EventNumber),
-                SubscriptionId,
-                cancellationToken
-            )
-            .WithItem(ContextKeys.GlobalPosition, re.Event.Position.CommitPosition)
-            .WithItem(ContextKeys.StreamPosition, re.Event.EventNumber);
+                re.Event.EventNumber
+            ),
+            SubscriptionId,
+            cancellationToken
+        );
     }
+
+    protected abstract ulong GetContextStreamPosition(ResolvedEvent re);
 
     protected override async ValueTask Unsubscribe(CancellationToken cancellationToken) {
         try {

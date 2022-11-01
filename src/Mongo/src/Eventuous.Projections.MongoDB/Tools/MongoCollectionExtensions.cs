@@ -1,10 +1,11 @@
 using System.Linq.Expressions;
+using Eventuous.Subscriptions.Tools;
 using static System.String;
 
 namespace Eventuous.Projections.MongoDB.Tools; 
 
 [PublicAPI]
-public static class ongoCollectionExtensions {
+public static class MongoCollectionExtensions {
     public static IMongoCollection<T> GetDocumentCollection<T>(
         this IMongoDatabase  database,
         MongoCollectionName? collectionName = null

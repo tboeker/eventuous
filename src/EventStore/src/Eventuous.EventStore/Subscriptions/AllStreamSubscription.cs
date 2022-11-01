@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Eventuous.EventStore.Subscriptions.Diagnostics;
 using Eventuous.Subscriptions.Checkpoints;
 using Eventuous.Subscriptions.Context;
@@ -22,6 +25,7 @@ public class AllStreamSubscription
     /// <param name="eventSerializer">Event serializer instance</param>
     /// <param name="metaSerializer"></param>
     /// <param name="eventFilter">Optional: server-side event filter</param>
+    /// <param name="loggerFactory"></param>
     public AllStreamSubscription(
         EventStoreClient     eventStoreClient,
         string               subscriptionId,
@@ -29,7 +33,8 @@ public class AllStreamSubscription
         ConsumePipe          consumePipe,
         IEventSerializer?    eventSerializer = null,
         IMetadataSerializer? metaSerializer  = null,
-        IEventFilter?        eventFilter     = null
+        IEventFilter?        eventFilter     = null,
+        ILoggerFactory?      loggerFactory   = null
     ) : this(
         eventStoreClient,
         new AllStreamSubscriptionOptions {
@@ -39,7 +44,8 @@ public class AllStreamSubscription
             EventFilter        = eventFilter
         },
         checkpointStore,
-        consumePipe
+        consumePipe,
+        loggerFactory
     ) { }
 
     /// <summary>
@@ -49,18 +55,23 @@ public class AllStreamSubscription
     /// <param name="options"></param>
     /// <param name="checkpointStore">Checkpoint store instance</param>
     /// <param name="consumePipe"></param>
+    /// <param name="loggerFactory"></param>
     public AllStreamSubscription(
         EventStoreClient             eventStoreClient,
         AllStreamSubscriptionOptions options,
         ICheckpointStore             checkpointStore,
-        ConsumePipe                  consumePipe
-    ) : base(eventStoreClient, options, checkpointStore, consumePipe) { }
+        ConsumePipe                  consumePipe,
+        ILoggerFactory?              loggerFactory
+    ) : base(eventStoreClient, options, checkpointStore, consumePipe, loggerFactory) { }
 
     protected override async ValueTask Subscribe(CancellationToken cancellationToken) {
         var filterOptions = new SubscriptionFilterOptions(
             Options.EventFilter ?? EventTypeFilter.ExcludeSystemEvents(),
             Options.CheckpointInterval,
             async (_, p, ct) => {
+                // !!! Checkpointing is disabled as it comes out of sync with delayed events
+                if (Options.ConcurrencyLimit > 1) return;
+
                 // This doesn't allow to report tie time gap
                 LastProcessed = new EventPosition(p.CommitPosition, DateTime.Now);
                 await StoreCheckpoint(LastProcessed, ct).NoContext();
@@ -73,13 +84,14 @@ public class AllStreamSubscription
 
         Subscription = await EventStoreClient.SubscribeToAllAsync(
                 fromAll,
-                HandleEvent,
+                (subscription, @event, ct) => HandleEvent(subscription, @event, ct),
                 Options.ResolveLinkTos,
                 HandleDrop,
                 filterOptions,
                 Options.Credentials,
                 cancellationToken
-            ).NoContext();
+            )
+            .NoContext();
 
         async Task HandleEvent(
             global::EventStore.Client.StreamSubscription _,
@@ -106,29 +118,24 @@ public class AllStreamSubscription
         );
 
         return new MessageConsumeContext(
-                re.Event.EventId.ToString(),
-                re.Event.EventType,
-                re.Event.ContentType,
-                re.OriginalStreamId,
-                re.Event.EventNumber.ToInt64(),
-                re.Event.Position.CommitPosition,
-                _sequence++,
-                re.Event.Created,
-                evt,
-                DeserializeMeta(re.Event.Metadata, re.OriginalStreamId),
-                SubscriptionId,
-                cancellationToken
-            )
-            .WithItem(ContextKeys.GlobalPosition, re.Event.Position.CommitPosition)
-            .WithItem(ContextKeys.StreamPosition, re.Event.Position.CommitPosition);
+            re.Event.EventId.ToString(),
+            re.Event.EventType,
+            re.Event.ContentType,
+            re.OriginalStreamId,
+            re.Event.Position.CommitPosition,
+            re.Event.Position.CommitPosition,
+            _sequence++,
+            re.Event.Created,
+            evt,
+            Options.MetadataSerializer.DeserializeMeta(Options, re.Event.Metadata, re.OriginalStreamId),
+            SubscriptionId,
+            cancellationToken
+        );
     }
 
     ulong _sequence;
 
     public GetSubscriptionGap GetMeasure()
-        => new AllStreamSubscriptionMeasure(
-            Options.SubscriptionId,
-            EventStoreClient,
-            () => LastProcessed
-        ).GetSubscriptionGap;
+        => new AllStreamSubscriptionMeasure(Options.SubscriptionId, EventStoreClient, () => LastProcessed)
+            .GetSubscriptionGap;
 }

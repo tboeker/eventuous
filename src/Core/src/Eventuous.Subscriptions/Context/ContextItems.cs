@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 namespace Eventuous.Subscriptions.Context;
 
 /// <summary>
@@ -24,16 +27,26 @@ public class ContextItems {
     /// <param name="key">Item key</param>
     /// <typeparam name="T">Item type</typeparam>
     /// <returns></returns>
-    public T? TryGetItem<T>(string key)
+    public T? GetItem<T>(string key)
         => _items.TryGetValue(key, out var value) && value is T val
             ? val
             : default;
+    
+    public bool TryGetItem<T>(string key, out T? value) {
+        if (_items.TryGetValue(key, out var val) && val is T val2) {
+            value = val2;
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
 }
 
 /// <summary>
 /// Pre-defined keys for well-known context items
 /// </summary>
 public static class ContextKeys {
-    public const string GlobalPosition = nameof(GlobalPosition);
-    public const string StreamPosition = nameof(StreamPosition);
+    // public const string GlobalPosition = nameof(GlobalPosition);
+    // public const string StreamPosition = nameof(StreamPosition);
 }

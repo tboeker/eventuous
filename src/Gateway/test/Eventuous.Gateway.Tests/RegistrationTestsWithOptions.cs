@@ -1,4 +1,5 @@
 ﻿using Eventuous.Producers;
+using Eventuous.Producers.Diagnostics;
 using Eventuous.Subscriptions;
 using Eventuous.Subscriptions.Context;
 using Eventuous.Subscriptions.Filters;
@@ -6,6 +7,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Eventuous.Gateway.Tests;
 
@@ -41,7 +43,11 @@ public class RegistrationTestsWithOptions {
     record TestOptions : SubscriptionOptions;
 
     class TestSub : EventSubscription<TestOptions> {
-        public TestSub(TestOptions options, ConsumePipe consumePipe) : base(options, consumePipe) { }
+        public TestSub(TestOptions options, ConsumePipe consumePipe) : base(
+            options,
+            consumePipe,
+            NullLoggerFactory.Instance
+        ) { }
 
         protected override ValueTask Subscribe(CancellationToken cancellationToken) => default;
 
@@ -64,6 +70,8 @@ public class RegistrationTestsWithOptions {
             ProducedMessages.AddRange(messages);
             return Task.CompletedTask;
         }
+
+        public TestProducer() : base() { }
     }
 
     record TestProduceOptions { }

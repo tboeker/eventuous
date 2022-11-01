@@ -1,10 +1,13 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Eventuous.Subscriptions;
 using Eventuous.Subscriptions.Registrations;
 
 // ReSharper disable CheckNamespace
 namespace Microsoft.Extensions.DependencyInjection;
 
-static class NamedRegistrationExtensions {
+public static class NamedRegistrationExtensions {
     public static IServiceCollection AddSubscriptionBuilder<T, TOptions>(
         this IServiceCollection          services,
         SubscriptionBuilder<T, TOptions> builder

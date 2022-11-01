@@ -1,4 +1,8 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Eventuous.Subscriptions.Context;
+using Eventuous.Subscriptions.Tools;
 
 namespace Eventuous.Subscriptions.Consumers;
 
@@ -14,7 +18,7 @@ public class DefaultConsumer : IMessageConsumer {
                 return;
             }
 
-            var tasks = _eventHandlers.Select(Handle);
+            var tasks = _eventHandlers.Select(handler => Handle(handler));
             await tasks.WhenAll().NoContext();
         }
         catch (Exception e) {

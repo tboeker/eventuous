@@ -1,4 +1,8 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Diagnostics;
+using Eventuous.Subscriptions.Logging;
 
 namespace Eventuous.Subscriptions.Context;
 
@@ -8,8 +12,8 @@ public class MessageConsumeContext : IMessageConsumeContext {
         string            eventType,
         string            contentType,
         string            stream,
-        long streamPosition,
-        ulong globalPosition,
+        ulong             streamPosition,
+        ulong             globalPosition,
         ulong             sequence,
         DateTime          created,
         object?           message,
@@ -20,7 +24,7 @@ public class MessageConsumeContext : IMessageConsumeContext {
         MessageId         = eventId;
         MessageType       = eventType;
         ContentType       = contentType;
-        Stream            = stream;
+        Stream            = new StreamName(stream);
         StreamPosition    = streamPosition;
         GlobalPosition    = globalPosition;
         Created           = created;
@@ -29,13 +33,14 @@ public class MessageConsumeContext : IMessageConsumeContext {
         Message           = message;
         CancellationToken = cancellationToken;
         SubscriptionId    = subscriptionId;
+        LogContext        = Logger.Current;
     }
 
     public string            MessageId         { get; }
     public string            MessageType       { get; }
     public string            ContentType       { get; }
-    public string            Stream            { get; }
-    public long              StreamPosition    { get; }
+    public StreamName        Stream            { get; }
+    public ulong             StreamPosition    { get; }
     public ulong             GlobalPosition    { get; }
     public DateTime          Created           { get; }
     public Metadata?         Metadata          { get; }
@@ -46,6 +51,7 @@ public class MessageConsumeContext : IMessageConsumeContext {
     public CancellationToken CancellationToken { get; set; }
     public ulong             Sequence          { get; }
     public string            SubscriptionId    { get; }
+    public LogContext        LogContext        { get; set; }
 }
 
 public class MessageConsumeContext<T> : WrappedConsumeContext, IMessageConsumeContext<T>

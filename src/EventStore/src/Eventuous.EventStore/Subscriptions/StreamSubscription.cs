@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Eventuous.EventStore.Subscriptions.Diagnostics;
 using Eventuous.Subscriptions.Checkpoints;
 using Eventuous.Subscriptions.Context;
@@ -23,6 +26,7 @@ public class StreamSubscription
     /// <param name="eventSerializer">Event serializer instance</param>
     /// <param name="metaSerializer"></param>
     /// <param name="throwOnError"></param>
+    /// <param name="loggerFactory"></param>
     public StreamSubscription(
         EventStoreClient     eventStoreClient,
         StreamName           streamName,
@@ -31,7 +35,8 @@ public class StreamSubscription
         ConsumePipe          consumerPipe,
         IEventSerializer?    eventSerializer = null,
         IMetadataSerializer? metaSerializer  = null,
-        bool                 throwOnError    = false
+        bool                 throwOnError    = false,
+        ILoggerFactory?      loggerFactory   = null
     ) : this(
         eventStoreClient,
         new StreamSubscriptionOptions {
@@ -42,7 +47,8 @@ public class StreamSubscription
             MetadataSerializer = metaSerializer
         },
         checkpointStore,
-        consumerPipe
+        consumerPipe,
+        loggerFactory
     ) { }
 
     /// <summary>
@@ -52,12 +58,14 @@ public class StreamSubscription
     /// <param name="checkpointStore">Checkpoint store instance</param>
     /// <param name="options">Subscription options</param>
     /// <param name="consumePipe"></param>
+    /// <param name="loggerFactory"></param>
     public StreamSubscription(
         EventStoreClient          client,
         StreamSubscriptionOptions options,
         ICheckpointStore          checkpointStore,
-        ConsumePipe               consumePipe
-    ) : base(client, options, checkpointStore, consumePipe)
+        ConsumePipe               consumePipe,
+        ILoggerFactory?           loggerFactory = null
+    ) : base(client, options, checkpointStore, consumePipe, loggerFactory)
         => Ensure.NotEmptyString(options.StreamName);
 
     protected override async ValueTask Subscribe(CancellationToken cancellationToken) {
@@ -69,12 +77,13 @@ public class StreamSubscription
         Subscription = await EventStoreClient.SubscribeToStreamAsync(
                 Options.StreamName,
                 fromStream,
-                HandleEvent,
+                (subscription, @event, ct) => HandleEvent(subscription, @event, ct),
                 Options.ResolveLinkTos,
                 HandleDrop,
                 Options.Credentials,
                 cancellationToken
-            ).NoContext();
+            )
+            .NoContext();
 
         async Task HandleEvent(
             global::EventStore.Client.StreamSubscription _,
@@ -83,8 +92,9 @@ public class StreamSubscription
         ) {
             // Despite ResolvedEvent.Event being not marked as nullable, it returns null for deleted events
             // ReSharper disable once ConditionIsAlwaysTrueOrFalse
+            // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
             if (re.Event is null) return;
-            
+
             if (Options.IgnoreSystemEvents && re.Event.EventType.Length > 0 && re.Event.EventType[0] == '$') return;
 
             await HandleInternal(CreateContext(re, ct)).NoContext();
@@ -108,22 +118,27 @@ public class StreamSubscription
         );
 
         return new MessageConsumeContext(
-                re.Event.EventId.ToString(),
-                re.Event.EventType,
-                re.Event.ContentType,
-                re.Event.EventStreamId,
-                re.Event.EventNumber.ToInt64(),
-                re.Event.Position.CommitPosition,
-                re.OriginalEventNumber,
-                re.Event.Created,
-                evt,
-                DeserializeMeta(re.Event.Metadata, re.OriginalStreamId, re.Event.EventNumber),
-                SubscriptionId,
-                cancellationToken
-            )
-            .WithItem(ContextKeys.GlobalPosition, re.Event.Position.CommitPosition)
-            .WithItem(ContextKeys.StreamPosition, re.OriginalEventNumber.ToUInt64());
+            re.Event.EventId.ToString(),
+            re.Event.EventType,
+            re.Event.ContentType,
+            re.Event.EventStreamId,
+            re.OriginalEventNumber,
+            re.Event.Position.CommitPosition,
+            _sequence++,
+            re.Event.Created,
+            evt,
+            Options.MetadataSerializer.DeserializeMeta(
+                Options,
+                re.Event.Metadata,
+                re.OriginalStreamId,
+                re.Event.EventNumber
+            ),
+            SubscriptionId,
+            cancellationToken
+        );
     }
+
+    ulong _sequence;
 
     public GetSubscriptionGap GetMeasure()
         => new StreamSubscriptionMeasure(

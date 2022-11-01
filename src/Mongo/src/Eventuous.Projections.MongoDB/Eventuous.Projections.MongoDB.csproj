@@ -3,13 +3,15 @@
         <PackageReadmeFile>README.md</PackageReadmeFile>
     </PropertyGroup>
     <ItemGroup>
-        <PackageReference Include="MongoDB.Driver" Version="2.12.2" />
+        <PackageReference Include="MongoDB.Driver" Version="2.16.0" />
+        <PackageReference Include="System.Reactive" Version="5.0.0" />
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="$(CoreRoot)\Eventuous.Subscriptions\Eventuous.Subscriptions.csproj" />
     </ItemGroup>
     <ItemGroup>
         <None Include="README.md" Pack="true" PackagePath="\" />
+        <None Remove="Eventuous.Projections.MongoDB.csproj.DotSettings" />
     </ItemGroup>
     <ItemGroup>
         <Using Include="MongoDB.Driver" />

@@ -1,5 +1,4 @@
-﻿using Eventuous.Diagnostics;
-using Eventuous.Producers;
+﻿using Eventuous.Producers;
 using Eventuous.Producers.Diagnostics;
 
 namespace Eventuous.EventStore.Producers;
@@ -20,15 +19,13 @@ public class EventStoreProducer : BaseProducer<EventStoreProduceOptions> {
     /// <param name="serializer">Optional: event serializer instance</param>
     /// <param name="metaSerializer">Optional: metadata serializer instance</param>
     public EventStoreProducer(
-        EventStoreClient          eventStoreClient,
-        IEventSerializer?         serializer       = null,
-        IMetadataSerializer?      metaSerializer   = null
+        EventStoreClient     eventStoreClient,
+        IEventSerializer?    serializer     = null,
+        IMetadataSerializer? metaSerializer = null
     ) : base(TracingOptions) {
         _client         = Ensure.NotNull(eventStoreClient);
-        _serializer     = serializer ?? DefaultEventSerializer.Instance;
+        _serializer     = serializer     ?? DefaultEventSerializer.Instance;
         _metaSerializer = metaSerializer ?? DefaultMetadataSerializer.Instance;
-
-        ReadyNow();
     }
 
     /// <summary>
@@ -38,9 +35,9 @@ public class EventStoreProducer : BaseProducer<EventStoreProduceOptions> {
     /// <param name="serializer">Optional: event serializer instance</param>
     /// <param name="metaSerializer">Optional: metadata serializer instance</param>
     public EventStoreProducer(
-        EventStoreClientSettings  clientSettings,
-        IEventSerializer?         serializer       = null,
-        IMetadataSerializer?      metaSerializer   = null
+        EventStoreClientSettings clientSettings,
+        IEventSerializer?        serializer     = null,
+        IMetadataSerializer?     metaSerializer = null
     ) : this(new EventStoreClient(Ensure.NotNull(clientSettings)), serializer, metaSerializer) { }
 
     static readonly ProducerTracingOptions TracingOptions = new() {
@@ -58,15 +55,28 @@ public class EventStoreProducer : BaseProducer<EventStoreProduceOptions> {
         var options = produceOptions ?? EventStoreProduceOptions.Default;
 
         foreach (var chunk in Ensure.NotNull(messages).Chunks(options.MaxAppendEventsCount)) {
-            await _client.AppendToStreamAsync(
-                stream,
-                options.ExpectedState,
-                chunk.Select(CreateMessage),
-                null,
-                options.Deadline,
-                options.Credentials,
-                cancellationToken
-            ).NoContext();
+            var chunkMessages = chunk.ToArray();
+
+            try {
+                await _client.AppendToStreamAsync(
+                        stream,
+                        options.ExpectedState,
+                        chunkMessages.Select(message => CreateMessage(message)),
+                        null,
+                        options.Deadline,
+                        options.Credentials,
+                        cancellationToken
+                    )
+                    .NoContext();
+
+                await chunkMessages.Select(x => x.Ack<EventStoreProducer>()).WhenAll().NoContext();
+            }
+            catch (Exception e) {
+                await chunkMessages
+                    .Select(x => x.Nack<EventStoreProducer>("Unable to produce to EventStoreDB", e))
+                    .WhenAll()
+                    .NoContext();
+            }
         }
     }
 

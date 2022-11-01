@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Threading.Channels;
 
 namespace Eventuous.Subscriptions.Channels;
@@ -26,7 +29,14 @@ public sealed class ConcurrentChannelWorker<T> : IAsyncDisposable {
     }
 
     public ValueTask Write(T element, CancellationToken cancellationToken)
-        => _channel.Write(element, false, cancellationToken);
+        => _disposing ? default : _channel.Write(element, false, cancellationToken);
 
-    public ValueTask DisposeAsync() => _channel.Stop(_cts, _readerTasks);
+    public ValueTask DisposeAsync() {
+        if (_disposing) return default;
+
+        _disposing = true;
+        return _channel.Stop(_cts, _readerTasks);
+    }
+
+    bool _disposing;
 }

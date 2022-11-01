@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Eventuous.Subscriptions.Filters;
 using Eventuous.Subscriptions.Filters.Partitioning;
 
@@ -14,7 +17,7 @@ public static class SubscriptionBuilderExtensions {
     [PublicAPI]
     public static SubscriptionBuilder WithPartitioning(
         this SubscriptionBuilder    builder,
-        uint                        partitionsCount,
+        int                         partitionsCount,
         Partitioner.GetPartitionKey getPartitionKey
     )
         => builder.AddConsumeFilterFirst(new PartitioningFilter(partitionsCount, getPartitionKey));
@@ -28,7 +31,7 @@ public static class SubscriptionBuilderExtensions {
     /// <returns></returns>
     public static SubscriptionBuilder WithPartitioningByStream(
         this SubscriptionBuilder builder,
-        uint                     partitionsCount
+        int                      partitionsCount
     )
         => builder.WithPartitioning(partitionsCount, ctx => ctx.Stream);
 }

@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Diagnostics;
 using Eventuous.Diagnostics;
 using Eventuous.Diagnostics.Tracing;
@@ -7,7 +10,7 @@ using ActivityStatus = Eventuous.Diagnostics.ActivityStatus;
 
 namespace Eventuous.Subscriptions.Filters;
 
-public class TracingFilter : ConsumeFilter {
+public class TracingFilter : ConsumeFilter<IMessageConsumeContext> {
     readonly KeyValuePair<string, object?>[] _defaultTags;
 
     public TracingFilter(string consumerName) {
@@ -16,9 +19,9 @@ public class TracingFilter : ConsumeFilter {
         _defaultTags = tags.Concat(EventuousDiagnostics.Tags).ToArray();
     }
 
-    public override async ValueTask Send(
-        IMessageConsumeContext                   context,
-        Func<IMessageConsumeContext, ValueTask>? next
+    protected override async ValueTask Send(
+        IMessageConsumeContext          context,
+        LinkedListNode<IConsumeFilter>? next
     ) {
         if (context.Message == null || next == null) return;
 
@@ -31,12 +34,12 @@ public class TracingFilter : ConsumeFilter {
             )
             : Activity.Current;
 
-        if (activity?.IsAllDataRequested == true && context is DelayedAckConsumeContext delayedAckContext) {
+        if (activity?.IsAllDataRequested == true && context is AsyncConsumeContext delayedAckContext) {
             activity.SetContextTags(context)?.SetTag(TelemetryTags.Eventuous.Partition, delayedAckContext.PartitionId);
         }
 
         try {
-            await next(context).NoContext();
+            await next.Value.Send(context, next.Next).NoContext();
 
             if (activity != null) {
                 if (context.WasIgnored()) {

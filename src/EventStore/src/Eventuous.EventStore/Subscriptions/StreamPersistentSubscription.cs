@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Eventuous.EventStore.Subscriptions.Diagnostics;
 using Eventuous.Subscriptions.Diagnostics;
 using Eventuous.Subscriptions.Filters;
@@ -12,10 +15,10 @@ public class StreamPersistentSubscription
     public StreamPersistentSubscription(
         EventStoreClient                    eventStoreClient,
         StreamPersistentSubscriptionOptions options,
-        ConsumePipe                         consumePipe
-    ) : base(eventStoreClient, options, consumePipe) {
-        Ensure.NotEmptyString(options.StreamName);
-    }
+        ConsumePipe                         consumePipe,
+        ILoggerFactory?                     loggerFactory
+    ) : base(eventStoreClient, options, consumePipe, loggerFactory)
+        => Ensure.NotEmptyString(options.StreamName);
 
     /// <summary>
     /// Creates EventStoreDB persistent subscription service for a given stream
@@ -32,7 +35,8 @@ public class StreamPersistentSubscription
         string               subscriptionId,
         ConsumePipe          consumerPipe,
         IEventSerializer?    eventSerializer = null,
-        IMetadataSerializer? metaSerializer  = null
+        IMetadataSerializer? metaSerializer  = null,
+        ILoggerFactory?      loggerFactory   = null
     ) : this(
         eventStoreClient,
         new StreamPersistentSubscriptionOptions {
@@ -41,20 +45,22 @@ public class StreamPersistentSubscription
             EventSerializer    = eventSerializer,
             MetadataSerializer = metaSerializer
         },
-        consumerPipe
+        consumerPipe,
+        loggerFactory
     ) { }
 
     protected override Task CreatePersistentSubscription(
         PersistentSubscriptionSettings settings,
         CancellationToken              cancellationToken
-    ) => SubscriptionClient.CreateAsync(
-        Options.StreamName,
-        Options.SubscriptionId,
-        settings,
-        Options.Deadline,
-        Options.Credentials,
-        cancellationToken
-    );
+    )
+        => SubscriptionClient.CreateAsync(
+            Options.StreamName,
+            Options.SubscriptionId,
+            settings,
+            Options.Deadline,
+            Options.Credentials,
+            cancellationToken
+        );
 
     protected override Task<PersistentSubscription> LocalSubscribe(
         Func<PersistentSubscription, ResolvedEvent, int?, CancellationToken, Task> eventAppeared,
@@ -71,6 +77,7 @@ public class StreamPersistentSubscription
             cancellationToken
         );
 
+    protected override ulong GetContextStreamPosition(ResolvedEvent re) => re.Event.EventNumber;
 
     public GetSubscriptionGap GetMeasure()
         => new StreamSubscriptionMeasure(

@@ -1,8 +1,12 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Eventuous.Subscriptions;
 using Eventuous.Subscriptions.Context;
 using Eventuous.Subscriptions.Filters;
+using Eventuous.Subscriptions.Logging;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using static Eventuous.Subscriptions.Diagnostics.SubscriptionsEventSource;
 
 namespace Eventuous.RabbitMq.Subscriptions;
 
@@ -30,8 +34,9 @@ public class RabbitMqSubscription : EventSubscription<RabbitMqSubscriptionOption
     public RabbitMqSubscription(
         ConnectionFactory                     connectionFactory,
         IOptions<RabbitMqSubscriptionOptions> options,
-        ConsumePipe                           consumePipe
-    ) : this(connectionFactory, options.Value, consumePipe) { }
+        ConsumePipe                           consumePipe,
+        ILoggerFactory?                       loggerFactory
+    ) : this(connectionFactory, options.Value, consumePipe, loggerFactory) { }
 
     /// <summary>
     /// Creates RabbitMQ subscription service instance
@@ -42,11 +47,13 @@ public class RabbitMqSubscription : EventSubscription<RabbitMqSubscriptionOption
     public RabbitMqSubscription(
         ConnectionFactory           connectionFactory,
         RabbitMqSubscriptionOptions options,
-        ConsumePipe                 consumePipe
+        ConsumePipe                 consumePipe,
+        ILoggerFactory?             loggerFactory
     )
         : base(
             Ensure.NotNull(options),
-            consumePipe.AddFilterFirst(new ConcurrentFilter(options.ConcurrencyLimit, options.ConcurrencyLimit * 10))
+            consumePipe.AddFilterFirst(new AsyncHandlingFilter(options.ConcurrencyLimit * 10)),
+            loggerFactory
         ) {
         _failureHandler = options.FailureHandler ?? DefaultEventFailureHandler;
         _connection     = Ensure.NotNull(connectionFactory).CreateConnection();
@@ -56,8 +63,7 @@ public class RabbitMqSubscription : EventSubscription<RabbitMqSubscriptionOption
 
         _channel.BasicQos(0, (ushort)prefetch, false);
 
-        if (options.FailureHandler != null && !options.ThrowOnError)
-            Log.ThrowOnErrorIncompatible(SubscriptionId);
+        if (options.FailureHandler != null && !options.ThrowOnError) Log.ThrowOnErrorIncompatible();
     }
 
     /// <summary>
@@ -73,38 +79,40 @@ public class RabbitMqSubscription : EventSubscription<RabbitMqSubscriptionOption
         string            exchange,
         string            subscriptionId,
         ConsumePipe       consumePipe,
+        ILoggerFactory?   loggerFactory,
         IEventSerializer? eventSerializer = null
     ) : this(
         connectionFactory,
         new RabbitMqSubscriptionOptions
             { Exchange = exchange, SubscriptionId = subscriptionId, EventSerializer = eventSerializer },
-        consumePipe
+        consumePipe,
+        loggerFactory
     ) { }
 
     protected override ValueTask Subscribe(CancellationToken cancellationToken) {
         var exchange = Ensure.NotEmptyString(Options.Exchange);
 
-        Log.Info("Ensuring exchange", exchange);
+        Log.InfoLog?.Log("Ensuring exchange", exchange);
 
         _channel.ExchangeDeclare(
             exchange,
-            Options.ExchangeOptions?.Type ?? ExchangeType.Fanout,
-            Options.ExchangeOptions?.Durable ?? true,
+            Options.ExchangeOptions?.Type       ?? ExchangeType.Fanout,
+            Options.ExchangeOptions?.Durable    ?? true,
             Options.ExchangeOptions?.AutoDelete ?? true,
             Options.ExchangeOptions?.Arguments
         );
 
-        Log.Info("Ensuring queue", Options.SubscriptionId);
+        Log.InfoLog?.Log("Ensuring queue", Options.SubscriptionId);
 
         _channel.QueueDeclare(
             Options.SubscriptionId,
-            Options.QueueOptions?.Durable ?? true,
-            Options.QueueOptions?.Exclusive ?? false,
+            Options.QueueOptions?.Durable    ?? true,
+            Options.QueueOptions?.Exclusive  ?? false,
             Options.QueueOptions?.AutoDelete ?? false,
             Options.QueueOptions?.Arguments
         );
 
-        Log.Info("Binding exchange to queue:", exchange, Options.SubscriptionId);
+        Log.InfoLog?.Log("Binding exchange to queue:", exchange, Options.SubscriptionId);
 
         _channel.QueueBind(
             Options.SubscriptionId,
@@ -124,9 +132,10 @@ public class RabbitMqSubscription : EventSubscription<RabbitMqSubscriptionOption
     const string ReceivedMessageKey = "receivedMessage";
 
     async Task HandleReceived(object sender, BasicDeliverEventArgs received) {
+        Logger.Current = Log;
         try {
             var ctx = CreateContext(sender, received).WithItem(ReceivedMessageKey, received);
-            await Handler(new DelayedAckConsumeContext(ctx, Ack, Nack)).NoContext();
+            await Handler(new AsyncConsumeContext(ctx, Ack, Nack)).NoContext();
         }
         catch (Exception) {
             // This won't stop the subscription, but the reader will be gone. Not sure how to solve this one.
@@ -135,7 +144,7 @@ public class RabbitMqSubscription : EventSubscription<RabbitMqSubscriptionOption
     }
 
     ValueTask Ack(IMessageConsumeContext ctx) {
-        var received = ctx.Items.TryGetItem<BasicDeliverEventArgs>(ReceivedMessageKey)!;
+        var received = ctx.Items.GetItem<BasicDeliverEventArgs>(ReceivedMessageKey)!;
         _channel.BasicAck(received.DeliveryTag, false);
         return default;
     }
@@ -143,7 +152,7 @@ public class RabbitMqSubscription : EventSubscription<RabbitMqSubscriptionOption
     ValueTask Nack(IMessageConsumeContext ctx, Exception exception) {
         if (Options.ThrowOnError) throw exception;
 
-        var received = ctx.Items.TryGetItem<BasicDeliverEventArgs>(ReceivedMessageKey)!;
+        var received = ctx.Items.GetItem<BasicDeliverEventArgs>(ReceivedMessageKey)!;
         _failureHandler(_channel, received, exception);
         return default;
     }
@@ -186,7 +195,7 @@ public class RabbitMqSubscription : EventSubscription<RabbitMqSubscriptionOption
     }
 
     void DefaultEventFailureHandler(IModel channel, BasicDeliverEventArgs message, Exception? exception) {
-        Log.Warn("Error in the consumer, will redeliver", exception?.ToString());
+        Log.WarnLog?.Log("Error in the consumer, will redeliver", exception?.ToString() ?? "Unknown error");
         _channel.BasicReject(message.DeliveryTag, true);
     }
 

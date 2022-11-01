@@ -30,8 +30,8 @@ public class GatewayHandler<TProduceOptions> : BaseEventHandler
 
         AcknowledgeProduce? onAck = null;
 
-        if (context is DelayedAckConsumeContext delayed) {
-            onAck = _ => delayed.Acknowledge();
+        if (context is AsyncConsumeContext asyncContext) {
+            onAck = _ => asyncContext.Acknowledge();
         }
 
         try {
@@ -56,6 +56,7 @@ public class GatewayHandler<TProduceOptions> : BaseEventHandler
                             x.Message,
                             x.GetMeta(context),
                             x.ProduceOptions,
+                            GatewayMetaHelper.GetContextMeta(context),
                             onAck,
                             context.CancellationToken
                         )

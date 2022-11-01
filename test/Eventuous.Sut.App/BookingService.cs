@@ -7,9 +7,9 @@ public class BookingService : ApplicationService<Booking, BookingState, BookingI
     public BookingService(IAggregateStore store, StreamNameMap? streamNameMap = null)
         : base(store, streamNameMap: streamNameMap) {
         OnNew<BookRoom>(
+            cmd => new BookingId(cmd.BookingId),
             (booking, cmd)
                 => booking.BookRoom(
-                    new BookingId(cmd.BookingId),
                     cmd.RoomId,
                     new StayPeriod(cmd.CheckIn, cmd.CheckOut),
                     cmd.Price
@@ -20,15 +20,15 @@ public class BookingService : ApplicationService<Booking, BookingState, BookingI
             cmd => new BookingId(cmd.BookingId),
             (booking, cmd)
                 => booking.Import(
-                    new BookingId(cmd.BookingId),
                     cmd.RoomId,
-                    new StayPeriod(cmd.CheckIn, cmd.CheckOut)
+                    new StayPeriod(cmd.CheckIn, cmd.CheckOut),
+                    cmd.Price
                 )
         );
 
         OnExisting<RecordPayment>(
             cmd => new BookingId(cmd.BookingId),
-            (booking, cmd) => booking.RecordPayment(cmd.PaymentId, cmd.Amount)
+            (booking, cmd) => booking.RecordPayment(cmd.PaymentId, cmd.Amount, cmd.PaidAt)
         );
     }
 }

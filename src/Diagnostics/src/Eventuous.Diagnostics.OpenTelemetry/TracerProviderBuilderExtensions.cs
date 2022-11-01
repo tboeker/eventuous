@@ -13,6 +13,7 @@ public static class TracerProviderBuilderExtensions {
         // The DummyListener is added by default so the remote context is propagated regardless.
         // After adding the activity source to OpenTelemetry we don't need the dummy listener.
         EventuousDiagnostics.RemoveDummyListener();
+
         return Ensure.NotNull(builder)
             .AddSource(EventuousDiagnostics.InstrumentationName);
     }

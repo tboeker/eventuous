@@ -1,4 +1,5 @@
 using Eventuous.Subscriptions.Context;
+using Eventuous.Subscriptions.Filters;
 
 namespace Eventuous.Gateway;
 
@@ -22,8 +23,8 @@ class GatewayHandler : BaseEventHandler {
 
         AcknowledgeProduce? onAck = null;
 
-        if (context is DelayedAckConsumeContext delayed) {
-            onAck = _ => delayed.Acknowledge();
+        if (context is AsyncConsumeContext asyncContext) {
+            onAck = _ => asyncContext.Acknowledge();
         }
 
         var grouped = shovelMessages.GroupBy(x => x.TargetStream);
@@ -39,7 +40,10 @@ class GatewayHandler : BaseEventHandler {
 
         Task ProduceToStream(StreamName streamName, IEnumerable<GatewayMessage> toProduce) {
             var messages = toProduce
-                .Select(x => new ProducedMessage(x.Message, x.GetMeta(context)) { OnAck = onAck });
+                .Select(
+                    x => new ProducedMessage(x.Message, x.GetMeta(context), GatewayMetaHelper.GetContextMeta(context))
+                        { OnAck = onAck }
+                );
 
             return _eventProducer.Produce(streamName, messages, context.CancellationToken);
         }

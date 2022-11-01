@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Reflection;
 using Eventuous.Diagnostics;
 using Eventuous.Subscriptions.Consumers;
@@ -131,9 +134,9 @@ public class SubscriptionBuilder<T, TOptions> : SubscriptionBuilder
     T?                _resolvedSubscription;
     IMessageConsumer? _resolvedConsumer;
 
-    internal Action<TOptions>? ConfigureOptions { get; private set; }
+    public Action<TOptions>? ConfigureOptions { get; private set; }
 
-    internal Dictionary<Type, Type> ParametersMap { get; } = new();
+    ParameterMap ParametersMap { get; } = new();
 
     /// <summary>
     /// Configure subscription options
@@ -151,8 +154,15 @@ public class SubscriptionBuilder<T, TOptions> : SubscriptionBuilder
         }
     }
 
-    public SubscriptionBuilder<T, TOptions> AddParameterMap<TService, TImplementation>() where TImplementation: TService {
-        ParametersMap.Add(typeof(TService), typeof(TImplementation));
+    public SubscriptionBuilder<T, TOptions> AddParameterMap<TService, TImplementation>()
+        where TImplementation : class, TService {
+        ParametersMap.Add<TService, TImplementation>();
+        return this;
+    }
+
+    public SubscriptionBuilder<T, TOptions> AddParameterMap<TService, TImplementation>(Func<IServiceProvider, TImplementation> resolver)
+        where TImplementation : class, TService {
+        ParametersMap.Add<TService, TImplementation>(resolver);
         return this;
     }
 
@@ -168,7 +178,7 @@ public class SubscriptionBuilder<T, TOptions> : SubscriptionBuilder
         return _resolvedConsumer;
     }
 
-    internal T ResolveSubscription(IServiceProvider sp) {
+    public T ResolveSubscription(IServiceProvider sp) {
         const string subscriptionIdParameterName = "subscriptionId";
 
         if (_resolvedSubscription != null) return _resolvedSubscription;
@@ -232,8 +242,8 @@ public class SubscriptionBuilder<T, TOptions> : SubscriptionBuilder
             }
 
             // ReSharper disable once ConvertIfStatementToReturnStatement
-            if (ParametersMap.TryGetValue(parameterInfo.ParameterType, out var type)) {
-                return sp.GetRequiredService(type);
+            if (ParametersMap.TryGetResolver(parameterInfo.ParameterType, out var resolver)) {
+                return resolver!(sp);
             }
 
             return sp.GetService(parameterInfo.ParameterType);
@@ -242,7 +252,7 @@ public class SubscriptionBuilder<T, TOptions> : SubscriptionBuilder
 }
 
 static class TypeExtensionsForRegistrations {
-    public static (ConstructorInfo Ctor, ParameterInfo Param)[] GetConstructors<T>(
+    public static (ConstructorInfo Ctor, ParameterInfo? Options)[] GetConstructors<T>(
         this Type type,
         string?   name = null
     )
@@ -256,7 +266,9 @@ static class TypeExtensionsForRegistrations {
                             y => y.ParameterType == typeof(T) && (name == null || y.Name == name)
                         )
                 )
-            ).Where(x => x.Options != null).ToArray()!;
+            )
+            .Where(x => x.Options != null)
+            .ToArray()!;
 }
 
 public delegate IEventHandler ResolveHandler(IServiceProvider sp);

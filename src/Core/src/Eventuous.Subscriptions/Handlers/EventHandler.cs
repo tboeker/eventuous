@@ -2,6 +2,8 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Eventuous.Subscriptions.Context;
 using Eventuous.Subscriptions.Diagnostics;
+using Eventuous.Subscriptions.Logging;
+using Eventuous.Subscriptions.Tools;
 
 namespace Eventuous.Subscriptions;
 
@@ -30,7 +32,7 @@ public abstract class EventHandler : BaseEventHandler {
         }
 
         if (!_map.IsTypeRegistered<T>()) {
-            SubscriptionsEventSource.Log.UnknownMessageType<T>();
+            Logger.Current.MessageTypeNotFound<T>();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -44,7 +46,7 @@ public abstract class EventHandler : BaseEventHandler {
             }
 
             ValueTask<EventHandlingStatus> NoHandler() {
-                SubscriptionsEventSource.Log.NoHandlerFound(DiagnosticName, context.MessageType);
+                context.LogContext.MessageHandlerNotFound(DiagnosticName, context.MessageType);
                 return Ignored;
             }
         }

@@ -1,6 +1,10 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Eventuous.Diagnostics;
+using Eventuous.Subscriptions.Tools;
 using static Eventuous.Subscriptions.Diagnostics.SubscriptionsEventSource;
 
 // ReSharper disable ParameterTypeCanBeEnumerable.Local
@@ -55,7 +59,6 @@ public sealed class SubscriptionMetrics : IWithCustomTags, IDisposable {
 
         _listener = new ActivityListener {
             ShouldListenTo  = x => x.Name == EventuousDiagnostics.InstrumentationName,
-            Sample          = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
             ActivityStopped = x => ActivityStopped(histogram, errorCount, x)
         };
 

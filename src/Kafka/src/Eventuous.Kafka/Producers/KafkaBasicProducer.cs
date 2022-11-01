@@ -1,7 +1,9 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Confluent.Kafka;
 using Eventuous.Producers;
 using Eventuous.Producers.Diagnostics;
-using Microsoft.Extensions.Hosting;
 
 namespace Eventuous.Kafka.Producers;
 
@@ -9,7 +11,7 @@ namespace Eventuous.Kafka.Producers;
 /// Produces messages with byte[] payload without using the schema registry. The message type is specified in the
 /// headers, so the type mapping is required.
 /// </summary>
-public class KafkaBasicProducer : BaseProducer<KafkaProduceOptions>, IHostedService {
+public class KafkaBasicProducer : BaseProducer<KafkaProduceOptions>, IHostedProducer {
     readonly IProducer<string, byte[]> _producerWithKey;
     readonly IProducer<Null, byte[]>   _producerWithoutKey;
     readonly IEventSerializer          _serializer;
@@ -18,8 +20,7 @@ public class KafkaBasicProducer : BaseProducer<KafkaProduceOptions>, IHostedServ
         base(TracingOptions) {
         _producerWithKey    = new ProducerBuilder<string, byte[]>(options.ProducerConfig).Build();
         _producerWithoutKey = new DependentProducerBuilder<Null, byte[]>(_producerWithKey.Handle).Build();
-
-        _serializer = serializer ?? DefaultEventSerializer.Instance;
+        _serializer         = serializer ?? DefaultEventSerializer.Instance;
     }
 
     static readonly ProducerTracingOptions TracingOptions = new() {
@@ -61,7 +62,7 @@ public class KafkaBasicProducer : BaseProducer<KafkaProduceOptions>, IHostedServ
                 }
 
                 void DeliveryHandler(DeliveryReport<string, byte[]> report, ProducedMessage msg)
-                    => Report(report.Error, msg);
+                    => Report(report.Error);
             }
 
             async Task ProduceNotPartitioned() {
@@ -74,25 +75,25 @@ public class KafkaBasicProducer : BaseProducer<KafkaProduceOptions>, IHostedServ
                     await _producerWithoutKey.ProduceAsync(stream, message, cancellationToken).NoContext();
                 }
                 else {
-                    _producerWithoutKey.Produce(stream, message, r => DeliveryHandler(r, producedMessage));
+                    _producerWithoutKey.Produce(stream, message, DeliveryHandler);
                 }
 
-                void DeliveryHandler(DeliveryReport<Null, byte[]> report, ProducedMessage msg)
-                    => Report(report.Error, msg);
+                void DeliveryHandler(DeliveryReport<Null, byte[]> report) => Report(report.Error);
             }
 
-            void Report(Error error, ProducedMessage message) {
+            void Report(Error error) {
                 if (error.IsError) {
-                    producedMessage.OnNack?.Invoke(message, error.Reason, null).NoContext().GetAwaiter().GetResult();
+                    producedMessage.Nack<KafkaBasicProducer>(error.Reason, null).NoContext().GetAwaiter().GetResult();
                 }
-
-                producedMessage.OnAck(message).NoContext().GetAwaiter().GetResult();
+                else {
+                    producedMessage.Ack<KafkaBasicProducer>().NoContext().GetAwaiter().GetResult();
+                }
             }
         }
     }
 
     public Task StartAsync(CancellationToken cancellationToken) {
-        ReadyNow();
+        Ready = true;
         return Task.CompletedTask;
     }
 
@@ -104,4 +105,6 @@ public class KafkaBasicProducer : BaseProducer<KafkaProduceOptions>, IHostedServ
             await Task.Delay(100, cancellationToken).NoContext();
         }
     }
+
+    public bool Ready { get; private set; }
 }

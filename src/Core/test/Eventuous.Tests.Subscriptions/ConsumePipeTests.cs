@@ -5,14 +5,18 @@ using Eventuous.Subscriptions.Filters;
 namespace Eventuous.Tests.Subscriptions;
 
 public class ConsumePipeTests {
-    static Fixture _auto = new();
+    readonly ITestOutputHelper _outputHelper;
+
+    static readonly Fixture Auto = new();
+
+    public ConsumePipeTests(ITestOutputHelper outputHelper) => _outputHelper = outputHelper;
 
     [Fact]
     public async Task ShouldCallHandlers() {
         var handler = new TestHandler();
         var pipe    = new ConsumePipe().AddDefaultConsumer(handler);
 
-        var ctx = _auto.Create<MessageConsumeContext>();
+        var ctx = Auto.CreateContext(_outputHelper);
 
         await pipe.Send(ctx);
 
@@ -26,20 +30,20 @@ public class ConsumePipeTests {
         var handler = new TestHandler();
         var pipe    = new ConsumePipe().AddDefaultConsumer(handler);
 
-        var baggage = _auto.Create<string>();
+        var baggage = Auto.Create<string>();
 
         pipe.AddFilterFirst(new TestFilter(Key, baggage));
 
-        var ctx = _auto.Create<MessageConsumeContext>();
+        var ctx = Auto.CreateContext(_outputHelper);
 
         await pipe.Send(ctx);
 
         handler.Called.Should().Be(1);
         handler.Received.Should().NotBeNull();
-        handler.Received!.Items.TryGetItem<string>(Key).Should().Be(baggage);
+        handler.Received!.Items.GetItem<string>(Key).Should().Be(baggage);
     }
 
-    class TestFilter : ConsumeFilter {
+    class TestFilter : ConsumeFilter<IMessageConsumeContext> {
         readonly string _key;
         readonly string _payload;
 
@@ -48,9 +52,9 @@ public class ConsumePipeTests {
             _payload = payload;
         }
 
-        public override ValueTask Send(IMessageConsumeContext context, Func<IMessageConsumeContext, ValueTask>? next) {
+        protected override ValueTask Send(IMessageConsumeContext context, LinkedListNode<IConsumeFilter>? next) {
             context.Items.AddItem(_key, _payload);
-            return next?.Invoke(context) ?? default;
+            return next?.Value.Send(context, next.Next) ?? default;
         }
     }
 

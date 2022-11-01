@@ -1,27 +1,36 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using Eventuous.Subscriptions.Context;
 using Eventuous.Subscriptions.Filters.Partitioning;
-using static Eventuous.Subscriptions.Diagnostics.SubscriptionsEventSource;
+using static Eventuous.Subscriptions.Filters.Partitioning.Partitioner;
 
 namespace Eventuous.Subscriptions.Filters;
 
-public sealed class PartitioningFilter : ConsumeFilter<DelayedAckConsumeContext>, IAsyncDisposable {
-    readonly Partitioner.GetPartitionHash _getHash;
-    readonly Partitioner.GetPartitionKey  _partitioner;
-    readonly ConcurrentFilter[]           _filters;
-    readonly int                          _partitionCount;
+public sealed class PartitioningFilter : ConsumeFilter<AsyncConsumeContext>, IAsyncDisposable {
+    readonly GetPartitionHash   _getHash;
+    readonly GetPartitionKey    _partitioner;
+    readonly AsyncHandlingFilter[] _filters;
+    readonly int                _partitionCount;
 
     public PartitioningFilter(
-        uint                          partitionCount,
-        Partitioner.GetPartitionKey?  partitioner = null,
-        Partitioner.GetPartitionHash? getHash     = null
+        int               partitionCount,
+        GetPartitionKey?  partitioner   = null,
+        GetPartitionHash? getHash       = null
     ) {
+        if (partitionCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(partitionCount), "Partition count must be greater than zero");
+
         _getHash        = getHash ?? MurmurHash3.Hash;
-        _partitionCount = (int)partitionCount;
+        _partitionCount = partitionCount;
         _partitioner    = partitioner ?? (ctx => ctx.Stream);
-        _filters        = Enumerable.Range(0, _partitionCount).Select(_ => new ConcurrentFilter(1)).ToArray();
+
+        _filters = Enumerable.Range(0, _partitionCount)
+            .Select(_ => new AsyncHandlingFilter(1))
+            .ToArray();
     }
 
-    public override ValueTask Send(DelayedAckConsumeContext context, Func<DelayedAckConsumeContext, ValueTask>? next) {
+    protected override ValueTask Send(AsyncConsumeContext context, LinkedListNode<IConsumeFilter>? next) {
         var partitionKey = _partitioner(context);
         var hash         = _getHash(partitionKey);
         var partition    = hash % _partitionCount;
@@ -31,7 +40,7 @@ public sealed class PartitioningFilter : ConsumeFilter<DelayedAckConsumeContext>
     }
 
     public async ValueTask DisposeAsync() {
-        Log.Stopping(nameof(PartitioningFilter), "concurrent filters", "");
+        // Logger.Current.Info("Partitioner is stopping concurrent filters");
         await Task.WhenAll(_filters.Select(async x => await x.DisposeAsync()));
     }
 }

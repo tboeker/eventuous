@@ -1,5 +1,4 @@
 using System.Diagnostics.Tracing;
-using System.Xml;
 
 // ReSharper disable MemberCanBePrivate.Global
 
@@ -25,6 +24,9 @@ public class EventuousEventSource : EventSource {
     const int TypeMapRegisteredId               = 10;
     const int CannotGetAggregateIdFromCommandId = 11;
 
+    const int InfoId = 100;
+    const int WarnId = 101;
+
     [NonEvent]
     public void CommandHandlerNotFound(Type type) => CommandHandlerNotFound(type.Name);
 
@@ -47,13 +49,15 @@ public class EventuousEventSource : EventSource {
         => UnableToAppendEvents(stream, exception.ToString());
 
     [NonEvent]
-    public void UnableToStoreAggregate<T>(T aggregate, Exception exception) where T : Aggregate {
+    public void UnableToStoreAggregate<T>(StreamName streamName, Exception exception)
+        where T : Aggregate {
         if (IsEnabled(EventLevel.Warning, EventKeywords.All))
-            UnableToStoreAggregate(typeof(T).Name, aggregate.GetId(), exception.ToString());
+            UnableToStoreAggregate(typeof(T).Name, streamName, exception.ToString());
     }
 
     [NonEvent]
-    public void UnableToLoadAggregate<T>(StreamName streamName, Exception exception) where T : Aggregate {
+    public void UnableToLoadAggregate<T>(StreamName streamName, Exception exception)
+        where T : Aggregate {
         if (IsEnabled(EventLevel.Warning, EventKeywords.All))
             UnableToLoadAggregate(typeof(T).Name, streamName, exception.ToString());
     }
@@ -92,11 +96,11 @@ public class EventuousEventSource : EventSource {
 
     [Event(
         UnableToStoreAggregateId,
-        Message = "Unable to store aggregate {0} with id {1}: {2}",
+        Message = "Unable to store aggregate {0} to stream {2}: {3}",
         Level = EventLevel.Warning
     )]
-    public void UnableToStoreAggregate(string type, string id, string exception)
-        => WriteEvent(UnableToStoreAggregateId, type, id, exception);
+    public void UnableToStoreAggregate(string type, string stream, string exception)
+        => WriteEvent(UnableToStoreAggregateId, type, stream, exception);
 
     [Event(
         UnableToReadAggregateId,
@@ -115,5 +119,10 @@ public class EventuousEventSource : EventSource {
     [Event(TypeMapRegisteredId, Message = "Type {0} registered as {1}", Level = EventLevel.Verbose)]
     public void TypeMapRegistered(string type, string typeName) {
         if (IsEnabled(EventLevel.Verbose, EventKeywords.All)) WriteEvent(TypeMapRegisteredId, type, typeName);
+    }
+
+    [Event(WarnId, Message = "{0} {1} {2}", Level = EventLevel.Warning)]
+    public void Warn(string message, string? arg1 = null, string? arg2 = null) {
+        if (IsEnabled(EventLevel.Warning, EventKeywords.All)) WriteEvent(WarnId, message, arg1, arg2);
     }
 }

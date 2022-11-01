@@ -1,3 +1,6 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Diagnostics;
 using Eventuous.Diagnostics;
 using Eventuous.Producers;
@@ -11,7 +14,7 @@ namespace Eventuous.RabbitMq.Producers;
 /// RabbitMQ producer
 /// </summary>
 [PublicAPI]
-public class RabbitMqProducer : BaseProducer<RabbitMqProduceOptions>, IHostedService {
+public class RabbitMqProducer : BaseProducer<RabbitMqProduceOptions>, IHostedProducer {
     readonly RabbitMqExchangeOptions? _options;
     readonly IEventSerializer         _serializer;
     readonly ConnectionFactory        _connectionFactory;
@@ -39,9 +42,7 @@ public class RabbitMqProducer : BaseProducer<RabbitMqProduceOptions>, IHostedSer
         _connection = _connectionFactory.CreateConnection();
         _channel    = _connection.CreateModel();
         _channel.ConfirmSelect();
-
-        ReadyNow();
-
+        Ready = true;
         return Task.CompletedTask;
     }
 
@@ -58,16 +59,31 @@ public class RabbitMqProducer : BaseProducer<RabbitMqProduceOptions>, IHostedSer
         CancellationToken            cancellationToken = default
     ) {
         EnsureExchange(stream);
+        var produced = new List<ProducedMessage>();
+        var failed   = new List<(ProducedMessage, Exception)>();
 
         foreach (var message in messages) {
             if (Activity.Current is { IsAllDataRequested: true }) {
                 Activity.Current.SetTag(RabbitMqTelemetryTags.RoutingKey, options?.RoutingKey);
             }
 
-            Publish(stream, message, options);
+            try {
+                Publish(stream, message, options);
+                produced.Add(message);
+            }
+            catch (Exception e) {
+                failed.Add((message, e));
+            }
         }
 
         await Confirm(cancellationToken).NoContext();
+
+        await produced.Select(x => x.Ack<RabbitMqProducer>()).WhenAll().NoContext();
+
+        await failed
+            .Select(x => x.Item1.Nack<RabbitMqProducer>("Failed to produce to RabbitMQ", x.Item2))
+            .WhenAll()
+            .NoContext();
     }
 
     void Publish(string stream, ProducedMessage message, RabbitMqProduceOptions? options) {
@@ -131,4 +147,6 @@ public class RabbitMqProducer : BaseProducer<RabbitMqProduceOptions>, IHostedSer
 
         return Task.CompletedTask;
     }
+
+    public bool Ready { get; private set; }
 }

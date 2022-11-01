@@ -1,4 +1,8 @@
+// Copyright (C) 2021-2022 Ubiquitous AS. All rights reserved
+// Licensed under the Apache License, Version 2.0.
+
 using System.Diagnostics;
+using Eventuous.Subscriptions.Logging;
 
 namespace Eventuous.Subscriptions.Context;
 
@@ -9,8 +13,8 @@ public interface IBaseConsumeContext {
     string            MessageId         { get; }
     string            MessageType       { get; }
     string            ContentType       { get; }
-    string            Stream            { get; }
-    long              StreamPosition    { get; }
+    StreamName        Stream            { get; }
+    ulong             StreamPosition    { get; }
     ulong             GlobalPosition    { get; }
     DateTime          Created           { get; }
     Metadata?         Metadata          { get; }
@@ -20,6 +24,7 @@ public interface IBaseConsumeContext {
     CancellationToken CancellationToken { get; set; }
     ulong             Sequence          { get; }
     string            SubscriptionId    { get; }
+    LogContext        LogContext        { get; set; }
 }
 
 public interface IMessageConsumeContext : IBaseConsumeContext {
@@ -27,5 +32,5 @@ public interface IMessageConsumeContext : IBaseConsumeContext {
 }
 
 public interface IMessageConsumeContext<out T> : IBaseConsumeContext where T : class {
-    T? Message { get; }
+    T Message { get; }
 }

@@ -7,6 +7,9 @@ namespace Eventuous.Producers;
 
 public abstract class BaseProducer<TProduceOptions> : BaseProducer, IEventProducer<TProduceOptions>
     where TProduceOptions : class {
+    protected BaseProducer(ProducerTracingOptions? tracingOptions = null) 
+        : base(tracingOptions) { }
+    
     protected abstract Task ProduceMessages(
         StreamName                   stream,
         IEnumerable<ProducedMessage> messages,
@@ -39,8 +42,6 @@ public abstract class BaseProducer<TProduceOptions> : BaseProducer, IEventProduc
         CancellationToken            cancellationToken = default
     )
         => ProduceMessages(stream, messages, null, cancellationToken);
-
-    protected BaseProducer(ProducerTracingOptions? tracingOptions = null) : base(tracingOptions) { }
 }
 
 public abstract class BaseProducer : IEventProducer {
@@ -83,8 +84,4 @@ public abstract class BaseProducer : IEventProducer {
             return (act?.Start(), new[] { producedMessage });
         }
     }
-
-    public bool Ready { get; private set; }
-
-    protected void ReadyNow() => Ready = true;
 }
